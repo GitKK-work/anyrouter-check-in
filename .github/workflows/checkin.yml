@@ -67,7 +67,7 @@ jobs:
 
     - name: 下载余额历史记录
       continue-on-error: true
-      uses: actions/download-artifact@v4
+      uses: actions/upload-artifact@v4
       with:
         name: balance-history
         path: balance_hash.txt

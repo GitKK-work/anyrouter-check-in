@@ -4,6 +4,10 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: checkin
+  cancel-in-progress: false
+
 jobs:
   checkin:
     runs-on: windows-2025
@@ -61,13 +65,12 @@ jobs:
         echo "缓存未命中，开始安装 Playwright 浏览器..."
         uv run playwright install chromium --with-deps
 
-    - name: 恢复余额历史缓存
-      uses: actions/cache/restore@v4
+    - name: 下载余额历史记录
+      continue-on-error: true
+      uses: actions/download-artifact@v4
       with:
-        path: balance_hash.txt
-        key: balance-hash-latest
-        restore-keys: |
-          balance-hash-
+        name: balance-history
+        path: .
 
     - name: 执行签到
       env:
@@ -87,13 +90,14 @@ jobs:
       run: |
         uv run checkin.py
 
-    - name: 保存余额历史缓存              
+    - name: 上传余额历史记录
       if: always()                
-      uses: actions/cache/save@v4 
-      with:                       
+      uses: actions/upload-artifact@v4
+      with:
+        name: balance-history
         path: balance_hash.txt    
-        key: balance-hash-latest  
-
+        retention-days: 90
+        overwrite: true
 
     - name: 执行结果
       if: always()

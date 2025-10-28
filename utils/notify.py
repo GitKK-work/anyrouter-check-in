@@ -95,7 +95,6 @@ class NotificationKit:
          }
          url = f'https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage'
          with httpx.Client(timeout=30.0) as client:
-               client.post(url, json=data)
                response = client.post(url, json=data)
 
                if response.status_code != 200:                                                   

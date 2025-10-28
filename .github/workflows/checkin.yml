@@ -68,6 +68,7 @@ jobs:
         key: balance-hash-latest
         restore-keys: |
           balance-hash-
+        save-always: true
 
     - name: 执行签到
       env:

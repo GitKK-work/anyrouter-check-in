@@ -65,7 +65,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: balance_hash.txt
-        key: balance-hash-${{ github.sha }}
+        key: balance-hash-latest
         restore-keys: |
           balance-hash-
 

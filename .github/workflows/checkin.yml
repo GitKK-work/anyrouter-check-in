@@ -87,6 +87,14 @@ jobs:
       run: |
         uv run checkin.py
 
+    - name: 保存余额历史缓存              
+      if: always()                
+      uses: actions/cache/save@v4 
+      with:                       
+        path: balance_hash.txt    
+        key: balance-hash-latest  
+
+
     - name: 执行结果
       if: always()
       run: |

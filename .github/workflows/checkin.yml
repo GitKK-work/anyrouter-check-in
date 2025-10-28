@@ -70,7 +70,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: balance-history
-        path: balance_hash.txt
+        path: .
 
     - name: 执行签到
       env:

@@ -65,11 +65,12 @@ jobs:
         echo "缓存未命中，开始安装 Playwright 浏览器..."
         uv run playwright install chromium --with-deps
 
-    - name: 下载余额历史记录
-      continue-on-error: true
-      uses: actions/download-artifact@v3
+    - name: 恢复余额历史缓存
+      uses: actions/cache@v4
+      id: balance-cache
       with:
-        name: balance-history
+        path: balance_hash.txt
+        key: ${{ runner.os }}-balance-history
 
     - name: 执行签到
       env:
@@ -88,14 +89,6 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
         uv run checkin.py
-
-    - name: 上传余额历史记录
-      if: always()                
-      uses: actions/upload-artifact@v3
-      with:
-        name: balance-history
-        path: balance_hash.txt
-        retention-days: 90
 
     - name: 执行结果
       if: always()

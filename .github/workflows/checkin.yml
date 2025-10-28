@@ -67,10 +67,9 @@ jobs:
 
     - name: 下载余额历史记录
       continue-on-error: true
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v3
       with:
         name: balance-history
-        path: .
 
     - name: 执行签到
       env:
@@ -92,12 +91,11 @@ jobs:
 
     - name: 上传余额历史记录
       if: always()                
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
         name: balance-history
         path: balance_hash.txt
         retention-days: 90
-        overwrite: true
 
     - name: 执行结果
       if: always()

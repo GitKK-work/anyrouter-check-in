@@ -70,20 +70,9 @@ jobs:
       id: balance-cache
       with:
         path: balance_hash.txt
-        key: ${{ runner.os }}-balance-history
-
-    - name: 检查缓存恢复情况
-      shell: pwsh
-      run: |
-        echo "Cache hit: ${{ steps.balance-cache.outputs.cache-hit }}"
-        echo "--- Checking for balance_hash.txt after cache restore ---"
-        if (Test-Path -Path balance_hash.txt) {
-          echo "OK: balance_hash.txt exists."
-          Get-Content balance_hash.txt
-        } else {
-          echo "FAIL: balance_hash.txt does NOT exist."
-        }
-        echo "----------------------------------------------------"
+        key: ${{ runner.os }}-balance-history-${{ github.run_id }}
+        restore-keys: |
+          ${{ runner.os }}-balance-history-
 
     - name: 执行签到
       env:
@@ -102,19 +91,6 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
         uv run checkin.py
-
-    - name: 检查签到后的文件状态
-      if: always()
-      shell: pwsh
-      run: |
-        echo "--- Checking for balance_hash.txt after script execution ---"
-        if (Test-Path -Path balance_hash.txt) {
-          echo "OK: balance_hash.txt exists."
-          Get-Content balance_hash.txt
-        } else {
-          echo "FAIL: balance_hash.txt does NOT exist after script run."
-        }
-        echo "--------------------------------------------------------"
 
     - name: 执行结果
       if: always()

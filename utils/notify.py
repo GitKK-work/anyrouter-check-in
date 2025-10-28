@@ -95,10 +95,10 @@ class NotificationKit:
          }
          url = f'https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage'
          with httpx.Client(timeout=30.0) as client:
-	           client.post(url, json=data)                                                       
-    	       response = client.post(url, json=data)                                            
+               client.post(url, json=data)                                                       
+               response = client.post(url, json=data)                                            
 
-        	   if response.status_code != 200:                                                   
+               if response.status_code != 200:                                                   
             		print(f'[Telegram]: API Response Status Code: {response.status_code}')        
                		print(f'[Telegram]: API Response Body: {response.text}')                      
                		raise Exception(f"API request failed with status {response.status_code}: {response.text}")

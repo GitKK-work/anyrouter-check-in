@@ -87,7 +87,7 @@ class NotificationKit:
                  raise ValueError('Telegram Bot Token or Chat ID not configured')
 
          print('[Telegram]: Attempting to send notification...') 
-		 text = f'*{title}*\\n\\n{content}'
+         text = f'*{title}*\\n\\n{content}'
          data = {
                  'chat_id': self.telegram_chat_id,
                  'text': text,

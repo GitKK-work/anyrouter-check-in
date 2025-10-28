@@ -62,13 +62,12 @@ jobs:
         uv run playwright install chromium --with-deps
 
     - name: 恢复余额历史缓存
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: balance_hash.txt
         key: balance-hash-latest
         restore-keys: |
           balance-hash-
-        save-always: true
 
     - name: 执行签到
       env:

@@ -86,7 +86,8 @@ class NotificationKit:
          if not self.telegram_bot_token or not self.telegram_chat_id:
                  raise ValueError('Telegram Bot Token or Chat ID not configured')
 
-         text = f'*{title}*\\n\\n{content}'
+         print('[Telegram]: Attempting to send notification...') 
+		 text = f'*{title}*\\n\\n{content}'
          data = {
                  'chat_id': self.telegram_chat_id,
                  'text': text,
@@ -94,7 +95,14 @@ class NotificationKit:
          }
          url = f'https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage'
          with httpx.Client(timeout=30.0) as client:
-                 client.post(url, json=data)
+	           client.post(url, json=data)                                                       
+    	       response = client.post(url, json=data)                                            
+
+        	   if response.status_code != 200:                                                   
+            		print(f'[Telegram]: API Response Status Code: {response.status_code}')        
+               		print(f'[Telegram]: API Response Body: {response.text}')                      
+               		raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+			 
 	
 	def push_message(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text'):
 		notifications = [

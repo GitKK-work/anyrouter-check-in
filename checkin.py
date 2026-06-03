@@ -299,7 +299,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 			'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
 			'Accept': 'application/json, text/plain, */*',
 			'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-			'Accept-Encoding': 'gzip, deflate, br, zstd',
+			'Accept-Encoding': 'gzip, deflate',
 			'Referer': provider_config.domain,
 			'Origin': provider_config.domain,
 			'Connection': 'keep-alive',

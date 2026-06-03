@@ -148,7 +148,23 @@ def get_user_info(client, headers, user_info_url: str):
 		response = client.get(user_info_url, headers=headers, timeout=30)
 
 		if response.status_code == 200:
-			data = response.json()
+			try:
+				data = response.json()
+			except Exception as je:
+				# Diagnostic: a 200 response whose body is not JSON. Reveal what
+				# the server actually sent so we can tell compression vs HTML/WAF.
+				raw = response.content
+				print(
+					f'[DIAGNOSTIC] user_info 200 but JSON parse failed: {je}\n'
+					f'  http_version={response.http_version}\n'
+					f"  req Accept-Encoding sent={response.request.headers.get('accept-encoding')!r}\n"
+					f"  resp Content-Type={response.headers.get('content-type')!r}\n"
+					f"  resp Content-Encoding={response.headers.get('content-encoding')!r}\n"
+					f'  resp len(bytes)={len(raw)}\n'
+					f'  resp first bytes (hex)={raw[:32].hex()}\n'
+					f'  resp text[:200]={response.text[:200]!r}'
+				)
+				raise
 			if data.get('success'):
 				user_data = data.get('data', {})
 				quota = round(user_data.get('quota', 0) / 500000, 2)

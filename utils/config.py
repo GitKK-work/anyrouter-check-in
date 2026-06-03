@@ -94,7 +94,7 @@ class AppConfig:
 				user_info_path='/api/user/self',
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
-				waf_cookie_names=['acw_tc', 'cdn_sec_tc', 'acw_sc__v2'],
+				waf_cookie_names=['acw_tc'],
 			),
 		}
 

@@ -97,16 +97,29 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 				try:
 					await page.wait_for_function('document.readyState === "complete"', timeout=5000)
 				except Exception:
+					pass
+
+				# WAF challenges may need multiple page loads and time to set cookies
+				max_retries = 3
+				waf_cookies = {}
+				for attempt in range(max_retries):
 					await page.wait_for_timeout(3000)
 
-				cookies = await page.context.cookies()
+					cookies = await page.context.cookies()
+					for cookie in cookies:
+						cookie_name = cookie.get('name')
+						cookie_value = cookie.get('value')
+						if cookie_name in required_cookies and cookie_value is not None:
+							waf_cookies[cookie_name] = cookie_value
 
-				waf_cookies = {}
-				for cookie in cookies:
-					cookie_name = cookie.get('name')
-					cookie_value = cookie.get('value')
-					if cookie_name in required_cookies and cookie_value is not None:
-						waf_cookies[cookie_name] = cookie_value
+					missing_cookies = [c for c in required_cookies if c not in waf_cookies]
+					if not missing_cookies:
+						break
+
+					if attempt < max_retries - 1:
+						print(f'[INFO] {account_name}: Waiting for WAF cookies (attempt {attempt + 1}/{max_retries}, got {len(waf_cookies)})...')
+						# Reload to trigger WAF challenge again
+						await page.reload(wait_until='networkidle')
 
 				print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
 
@@ -264,18 +277,18 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 	provider_config = app_config.get_provider(account.provider)
 	if not provider_config:
 		print(f'[FAILED] {account_name}: Provider "{account.provider}" not found in configuration')
-		return False, None
+		return False, None, None
 
 	print(f'[INFO] {account_name}: Using provider "{account.provider}" ({provider_config.domain})')
 
 	user_cookies = parse_cookies(account.cookies)
 	if not user_cookies:
 		print(f'[FAILED] {account_name}: Invalid configuration format')
-		return False, None
+		return False, None, None
 
 	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
 	if not all_cookies:
-		return False, None
+		return False, None, None
 
 	client = httpx.Client(http2=True, timeout=30.0)
 

@@ -21,6 +21,7 @@ class ProviderConfig:
 	api_user_key: str = 'new-api-user'
 	bypass_method: Literal['waf_cookies'] | None = None
 	waf_cookie_names: List[str] | None = None
+	waf_challenge_path: str | None = None  # URL path the browser visits to trigger the WAF JS challenge (defaults to login_path)
 
 	def __post_init__(self):
 		required_waf_cookies = set()
@@ -55,6 +56,7 @@ class ProviderConfig:
 			api_user_key=data.get('api_user_key', 'new-api-user'),
 			bypass_method=data.get('bypass_method'),
 			waf_cookie_names=data.get('waf_cookie_names'),
+			waf_challenge_path=data.get('waf_challenge_path'),
 		)
 
 	def needs_waf_cookies(self) -> bool:
@@ -94,7 +96,10 @@ class AppConfig:
 				user_info_path='/api/user/self',
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
-				waf_cookie_names=['acw_tc'],
+				# The API path (not /login) serves the Aliyun WAF JS challenge on
+				# datacenter IPs; the browser must visit it to obtain acw_sc__v2.
+				waf_challenge_path='/api/user/self',
+				waf_cookie_names=['acw_tc', 'acw_sc__v2'],
 			),
 		}
 

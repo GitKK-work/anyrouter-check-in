@@ -65,8 +65,12 @@ def parse_cookies(cookies_data):
 	return {}
 
 
-async def get_waf_cookies_with_playwright(account_name: str, login_url: str, required_cookies: list[str]):
-	"""使用 Playwright 获取 WAF cookies（隐私模式）"""
+async def get_waf_cookies_with_playwright(account_name: str, challenge_url: str, required_cookies: list[str]):
+	"""使用 Playwright 获取 WAF cookies（隐私模式）
+
+	Navigates to challenge_url so the Aliyun WAF JS challenge executes in a real
+	browser, which sets cookies like acw_sc__v2 that httpx cannot compute itself.
+	"""
 	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
 
 	async with async_playwright() as p:
@@ -90,9 +94,9 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 			page = await context.new_page()
 
 			try:
-				print(f'[PROCESSING] {account_name}: Access login page to get initial cookies...')
+				print(f'[PROCESSING] {account_name}: Access {challenge_url} to solve WAF challenge...')
 
-				await page.goto(login_url, wait_until='networkidle')
+				await page.goto(challenge_url, wait_until='networkidle')
 
 				try:
 					await page.wait_for_function('document.readyState === "complete"', timeout=5000)
@@ -118,7 +122,7 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 
 					if attempt < max_retries - 1:
 						print(f'[INFO] {account_name}: Waiting for WAF cookies (attempt {attempt + 1}/{max_retries}, got {len(waf_cookies)})...')
-						# Reload to trigger WAF challenge again
+						# Reload to re-trigger the WAF challenge
 						await page.reload(wait_until='networkidle')
 
 				print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
@@ -185,8 +189,9 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 	waf_cookies = {}
 
 	if provider_config.needs_waf_cookies():
-		login_url = f'{provider_config.domain}{provider_config.login_path}'
-		waf_cookies = await get_waf_cookies_with_playwright(account_name, login_url, provider_config.waf_cookie_names)
+		challenge_path = provider_config.waf_challenge_path or provider_config.login_path
+		challenge_url = f'{provider_config.domain}{challenge_path}'
+		waf_cookies = await get_waf_cookies_with_playwright(account_name, challenge_url, provider_config.waf_cookie_names)
 		if not waf_cookies:
 			print(f'[FAILED] {account_name}: Unable to get WAF cookies')
 			return None

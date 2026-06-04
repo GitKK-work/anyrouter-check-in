@@ -93,6 +93,14 @@ jobs:
       run: |
         uv run checkin.py
 
+    - name: 上传 WAF 诊断文件
+      if: always()
+      uses: actions/upload-artifact@v5
+      with:
+        name: waf-challenge-dump
+        path: waf_challenge_*.html
+        if-no-files-found: ignore
+
     - name: 执行结果
       if: always()
       run: |

@@ -190,6 +190,19 @@ async def open_browser_session(
 				doc_cookie = await page.evaluate('document.cookie')
 				print(f'[DIAGNOSTIC] {account_name}: browser cookies after probe: {names}')
 				print(f'[DIAGNOSTIC] {account_name}: document.cookie = {doc_cookie!r}')
+				# Print the full cookie records so we can see httpOnly / path / etc.
+				for c in final_cookies:
+					print(
+						f'[DIAGNOSTIC] {account_name}: cookie {c.get("name")!r} '
+						f'value_len={len(c.get("value") or "")} '
+						f'httpOnly={c.get("httpOnly")} sameSite={c.get("sameSite")} '
+						f'path={c.get("path")} domain={c.get("domain")}'
+					)
+				# Dump the first 800 chars of the current page so we can see
+				# whether it's the challenge page (with the obfuscated script)
+				# or the real content.
+				body_html = await page.content()
+				print(f'[DIAGNOSTIC] {account_name}: page content[:800]={body_html[:800]!r}')
 			except Exception as de:
 				print(f'[WARNING] {account_name}: cookie diagnostic failed: {de}')
 

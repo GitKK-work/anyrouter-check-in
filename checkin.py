@@ -198,10 +198,16 @@ async def open_browser_session(
 						f'httpOnly={c.get("httpOnly")} sameSite={c.get("sameSite")} '
 						f'path={c.get("path")} domain={c.get("domain")}'
 					)
-				# Dump the first 800 chars of the current page so we can see
-				# whether it's the challenge page (with the obfuscated script)
-				# or the real content.
+				# Dump the full challenge page HTML to a file so we can
+				# study the obfuscated script offline.
 				body_html = await page.content()
+				dump_path = f'waf_challenge_{account_name.replace(" ", "_")}.html'
+				try:
+					with open(dump_path, 'w', encoding='utf-8') as df:
+						df.write(body_html)
+					print(f'[DIAGNOSTIC] {account_name}: challenge page dumped to {dump_path} ({len(body_html)} bytes)')
+				except Exception as we:
+					print(f'[WARNING] {account_name}: failed to dump challenge page: {we}')
 				print(f'[DIAGNOSTIC] {account_name}: page content[:800]={body_html[:800]!r}')
 			except Exception as de:
 				print(f'[WARNING] {account_name}: cookie diagnostic failed: {de}')

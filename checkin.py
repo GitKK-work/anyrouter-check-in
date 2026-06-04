@@ -129,36 +129,59 @@ async def open_browser_session(
 		page = await context.new_page()
 
 		# Probe a page that may trigger the WAF JS challenge. The WAF
-		# challenge HTML sets acw_sc__v2 via document.cookie after the
-		# obfuscated script computes it. We wait specifically for that
-		# cookie to appear (with a generous timeout) so we don't race
-		# against the JS.
+		# challenge HTML is a tiny page with <meta name="aliyun_waf_aa" ...>
+		# and a deferred/obfuscated script that computes acw_sc__v2 and
+		# writes it via document.cookie. We need to:
+		#   1. wait until the challenge script has actually executed, and
+		#   2. wait for acw_sc__v2 to appear in document.cookie.
+		# `domcontentloaded` is too early — the script often runs on a
+		# setTimeout after the DOM is ready, so we use `load` and then
+		# poll the document.cookie ourselves.
 		probe_url = f'{domain.rstrip("/")}{probe_path}'
 		print(f'[PROCESSING] {account_name}: Probing {probe_url} to settle WAF session...')
 		try:
-			await page.goto(probe_url, wait_until='domcontentloaded', timeout=30000)
+			await page.goto(probe_url, wait_until='load', timeout=30000)
 		except Exception as e:
 			print(f'[WARNING] {account_name}: Initial navigation warning: {e}')
 
 		if waf_cookie_names:
-			# Wait up to 20s for the required WAF cookies to appear.
 			cookie_predicate = (
 				'(['
 				+ ','.join(f"'{c}'" for c in waf_cookie_names)
 				+ '] || []).every(c => document.cookie.split("; ").some(k => k.startsWith(c + "=")))'
 			)
-			try:
-				await page.wait_for_function(cookie_predicate, timeout=20000)
-			except Exception:
-				pass
 
-			# Reload once more so the freshly-set WAF cookies are sent on
-			# the request that actually fetches the protected content.
-			try:
-				await page.reload(wait_until='domcontentloaded', timeout=30000)
-				await page.wait_for_function(cookie_predicate, timeout=20000)
-			except Exception:
-				pass
+			# The WAF challenge script runs after page load on a short
+			# timer. Poll document.cookie ourselves with a generous
+			# timeout so we don't race the script.
+			async def _wait_for_waf_cookies(label: str):
+				deadline_s = 25
+				interval_s = 1.0
+				elapsed = 0.0
+				while elapsed < deadline_s:
+					try:
+						got = await page.evaluate(cookie_predicate)
+					except Exception:
+						got = False
+					if got:
+						return True
+					await page.wait_for_timeout(int(interval_s * 1000))
+					elapsed += interval_s
+				return False
+
+			got_cookies = await _wait_for_waf_cookies('first')
+			if not got_cookies:
+				# Reload to re-trigger the WAF challenge. The reload
+				# request still won't have acw_sc__v2, so the server
+				# will serve the challenge page again and the script
+				# will run again — hopefully this time the cookie
+				# sticks.
+				print(f'[INFO] {account_name}: WAF cookies not present after first probe, reloading...')
+				try:
+					await page.reload(wait_until='load', timeout=30000)
+				except Exception:
+					pass
+				await _wait_for_waf_cookies('reload')
 
 			# Diagnostic: what cookies does the browser actually hold now?
 			try:

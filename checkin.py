@@ -160,6 +160,16 @@ async def open_browser_session(
 			except Exception:
 				pass
 
+			# Diagnostic: what cookies does the browser actually hold now?
+			try:
+				final_cookies = await context.cookies()
+				names = sorted({c.get('name') for c in final_cookies if c.get('name')})
+				doc_cookie = await page.evaluate('document.cookie')
+				print(f'[DIAGNOSTIC] {account_name}: browser cookies after probe: {names}')
+				print(f'[DIAGNOSTIC] {account_name}: document.cookie = {doc_cookie!r}')
+			except Exception as de:
+				print(f'[WARNING] {account_name}: cookie diagnostic failed: {de}')
+
 		return context, page
 	except Exception:
 		# Clean up on the failure path: stop the playwright instance and remove the dir.
@@ -218,12 +228,22 @@ async def browser_fetch(page, method: str, url: str, headers: dict, body: str | 
 
 def parse_user_info_response(account_name: str, response: dict) -> dict:
 	"""Parse a user_info response (httpx or browser_fetch shape) into the result dict."""
-	if response.get('status') != 200:
-		return {'success': False, 'error': f'Failed to get user info: HTTP {response.get("status")}'}
+	status = response.get('status')
+	if status != 200:
+		return {'success': False, 'error': f'Failed to get user info: HTTP {status}'}
 
+	text = response.get('text', '') or ''
 	try:
-		data = json.loads(response['text'])
-	except Exception:
+		data = json.loads(text)
+	except Exception as je:
+		ct = response.get('headers', {}).get('content-type', '')
+		preview = text[:200].replace('\n', ' ')
+		print(
+			f'[DIAGNOSTIC] user_info 200 but JSON parse failed: {je}\n'
+			f'  content-type={ct!r}\n'
+			f'  resp len={len(text)}\n'
+			f'  resp text[:200]={preview!r}'
+		)
 		return {'success': False, 'error': 'Failed to get user info: non-JSON response'}
 
 	if data.get('success'):

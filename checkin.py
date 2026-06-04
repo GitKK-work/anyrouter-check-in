@@ -9,8 +9,8 @@ import json
 import os
 import sys
 from datetime import datetime
+from urllib.parse import urlparse
 
-import httpx
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
@@ -65,180 +65,236 @@ def parse_cookies(cookies_data):
 	return {}
 
 
-async def get_waf_cookies_with_playwright(account_name: str, challenge_url: str, required_cookies: list[str]):
-	"""使用 Playwright 获取 WAF cookies（隐私模式）
+async def open_browser_session(
+	account_name: str,
+	domain: str,
+	user_cookies: dict,
+	waf_cookie_names: list[str],
+	probe_path: str = '/login',
+):
+	"""Open a browser context pre-loaded with user cookies and a solved WAF session.
 
-	Navigates to challenge_url so the Aliyun WAF JS challenge executes in a real
-	browser, which sets cookies like acw_sc__v2 that httpx cannot compute itself.
+	All subsequent API calls for this account should be made via `page.evaluate(fetch(...))`
+	inside the returned page so the browser automatically attaches WAF + session cookies.
 	"""
-	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
+	import tempfile
 
-	async with async_playwright() as p:
-		import tempfile
+	print(f'[PROCESSING] {account_name}: Starting browser session...')
 
-		with tempfile.TemporaryDirectory() as temp_dir:
-			context = await p.chromium.launch_persistent_context(
-				user_data_dir=temp_dir,
-				headless=False,
-				user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-				viewport={'width': 1920, 'height': 1080},
-				args=[
-					'--disable-blink-features=AutomationControlled',
-					'--disable-dev-shm-usage',
-					'--disable-web-security',
-					'--disable-features=VizDisplayCompositor',
-					'--no-sandbox',
-				],
-			)
+	parsed = urlparse(domain)
+	cookie_domain = parsed.hostname or domain
 
-			page = await context.new_page()
-
-			try:
-				print(f'[PROCESSING] {account_name}: Access {challenge_url} to solve WAF challenge...')
-
-				await page.goto(challenge_url, wait_until='networkidle')
-
-				try:
-					await page.wait_for_function('document.readyState === "complete"', timeout=5000)
-				except Exception:
-					pass
-
-				# WAF challenges may need multiple page loads and time to set cookies
-				max_retries = 3
-				waf_cookies = {}
-				for attempt in range(max_retries):
-					await page.wait_for_timeout(3000)
-
-					cookies = await page.context.cookies()
-					for cookie in cookies:
-						cookie_name = cookie.get('name')
-						cookie_value = cookie.get('value')
-						if cookie_name in required_cookies and cookie_value is not None:
-							waf_cookies[cookie_name] = cookie_value
-
-					missing_cookies = [c for c in required_cookies if c not in waf_cookies]
-					if not missing_cookies:
-						break
-
-					if attempt < max_retries - 1:
-						print(f'[INFO] {account_name}: Waiting for WAF cookies (attempt {attempt + 1}/{max_retries}, got {len(waf_cookies)})...')
-						# Reload to re-trigger the WAF challenge
-						await page.reload(wait_until='networkidle')
-
-				print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
-
-				missing_cookies = [c for c in required_cookies if c not in waf_cookies]
-
-				if missing_cookies:
-					print(f'[FAILED] {account_name}: Missing WAF cookies: {missing_cookies}')
-					await context.close()
-					return None
-
-				print(f'[SUCCESS] {account_name}: Successfully got all WAF cookies')
-
-				await context.close()
-
-				return waf_cookies
-
-			except Exception as e:
-				print(f'[FAILED] {account_name}: Error occurred while getting WAF cookies: {e}')
-				await context.close()
-				return None
-
-
-def get_user_info(client, headers, user_info_url: str):
-	"""获取用户信息"""
+	# Use mkdtemp + manual cleanup so the profile dir survives past the
+	# open_browser_session call (we hand the context back to the caller,
+	# which is responsible for closing it; close_browser_session will then
+	# delete the dir).
+	profile_dir = tempfile.mkdtemp(prefix=f'pw-{account_name.replace(" ", "_")}-')
+	playwright_cm = async_playwright()
+	p = await playwright_cm.__aenter__()
 	try:
-		response = client.get(user_info_url, headers=headers, timeout=30)
+		context = await p.chromium.launch_persistent_context(
+			user_data_dir=profile_dir,
+			headless=False,
+			user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+			viewport={'width': 1920, 'height': 1080},
+			args=[
+				'--disable-blink-features=AutomationControlled',
+				'--disable-dev-shm-usage',
+				'--no-sandbox',
+			],
+		)
 
-		if response.status_code == 200:
+		# Stash the playwright + profile dir on the context so close_browser_session
+		# can shut them down deterministically.
+		context._pw_cm = playwright_cm  # type: ignore[attr-defined]
+		context._pw_p = p  # type: ignore[attr-defined]
+		context._profile_dir = profile_dir  # type: ignore[attr-defined]
+
+		# Inject the user-provided session cookies before any navigation so
+		# they are sent on the very first request and accepted by the API.
+		if user_cookies:
+			inject = []
+			for name, value in user_cookies.items():
+				inject.append({
+					'name': name,
+					'value': value,
+					'domain': cookie_domain,
+					'path': '/',
+				})
 			try:
-				data = response.json()
-			except Exception as je:
-				# Diagnostic: a 200 response whose body is not JSON. Reveal what
-				# the server actually sent so we can tell compression vs HTML/WAF.
-				raw = response.content
-				print(
-					f'[DIAGNOSTIC] user_info 200 but JSON parse failed: {je}\n'
-					f'  http_version={response.http_version}\n'
-					f"  req Accept-Encoding sent={response.request.headers.get('accept-encoding')!r}\n"
-					f"  resp Content-Type={response.headers.get('content-type')!r}\n"
-					f"  resp Content-Encoding={response.headers.get('content-encoding')!r}\n"
-					f'  resp len(bytes)={len(raw)}\n'
-					f'  resp first bytes (hex)={raw[:32].hex()}\n'
-					f'  resp text[:200]={response.text[:200]!r}'
-				)
-				raise
-			if data.get('success'):
-				user_data = data.get('data', {})
-				quota = round(user_data.get('quota', 0) / 500000, 2)
-				used_quota = round(user_data.get('used_quota', 0) / 500000, 2)
-				return {
-					'success': True,
-					'quota': quota,
-					'used_quota': used_quota,
-					'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
-				}
-		return {'success': False, 'error': f'Failed to get user info: HTTP {response.status_code}'}
+				await context.add_cookies(inject)
+			except Exception as e:
+				print(f'[WARNING] {account_name}: Failed to inject user cookies: {e}')
+
+		page = await context.new_page()
+
+		# Probe a page that may trigger the WAF JS challenge. The WAF
+		# challenge HTML sets acw_sc__v2 via document.cookie after the
+		# obfuscated script computes it. We wait specifically for that
+		# cookie to appear (with a generous timeout) so we don't race
+		# against the JS.
+		probe_url = f'{domain.rstrip("/")}{probe_path}'
+		print(f'[PROCESSING] {account_name}: Probing {probe_url} to settle WAF session...')
+		try:
+			await page.goto(probe_url, wait_until='domcontentloaded', timeout=30000)
+		except Exception as e:
+			print(f'[WARNING] {account_name}: Initial navigation warning: {e}')
+
+		if waf_cookie_names:
+			# Wait up to 20s for the required WAF cookies to appear.
+			cookie_predicate = (
+				'(['
+				+ ','.join(f"'{c}'" for c in waf_cookie_names)
+				+ '] || []).every(c => document.cookie.split("; ").some(k => k.startsWith(c + "=")))'
+			)
+			try:
+				await page.wait_for_function(cookie_predicate, timeout=20000)
+			except Exception:
+				pass
+
+			# Reload once more so the freshly-set WAF cookies are sent on
+			# the request that actually fetches the protected content.
+			try:
+				await page.reload(wait_until='domcontentloaded', timeout=30000)
+				await page.wait_for_function(cookie_predicate, timeout=20000)
+			except Exception:
+				pass
+
+		return context, page
+	except Exception:
+		# Clean up on the failure path: stop the playwright instance and remove the dir.
+		try:
+			await playwright_cm.__aexit__(None, None, None)
+		except Exception:
+			pass
+		import shutil
+		shutil.rmtree(profile_dir, ignore_errors=True)
+		raise
+
+
+async def close_browser_session(context, page):
+	"""Close the browser context, stop Playwright, and remove the temp profile dir."""
+	import shutil
+
+	profile_dir = getattr(context, '_profile_dir', None)
+	pw_cm = getattr(context, '_pw_cm', None)
+	try:
+		if page is not None:
+			try:
+				await page.close()
+			except Exception:
+				pass
+		await context.close()
+	finally:
+		if pw_cm is not None:
+			try:
+				await pw_cm.__aexit__(None, None, None)
+			except Exception:
+				pass
+		if profile_dir:
+			shutil.rmtree(profile_dir, ignore_errors=True)
+
+
+async def browser_fetch(page, method: str, url: str, headers: dict, body: str | None = None) -> dict:
+	"""Issue an HTTP request from inside the browser context and return its result.
+
+	Returning {status, headers, text} mirrors what an httpx response would give
+	us, so the existing response-parsing code in get_user_info / execute_check_in
+	can be reused almost as-is.
+	"""
+	js = """
+		async ({method, url, headers, body}) => {
+			const init = {method, headers, credentials: 'include'};
+			if (body !== null && body !== undefined) init.body = body;
+			const r = await fetch(url, init);
+			const respHeaders = {};
+			r.headers.forEach((v, k) => { respHeaders[k] = v; });
+			const text = await r.text();
+			return {status: r.status, headers: respHeaders, text};
+		}
+	"""
+	return await page.evaluate(js, {'method': method, 'url': url, 'headers': headers, 'body': body})
+
+
+def parse_user_info_response(account_name: str, response: dict) -> dict:
+	"""Parse a user_info response (httpx or browser_fetch shape) into the result dict."""
+	if response.get('status') != 200:
+		return {'success': False, 'error': f'Failed to get user info: HTTP {response.get("status")}'}
+
+	try:
+		data = json.loads(response['text'])
+	except Exception:
+		return {'success': False, 'error': 'Failed to get user info: non-JSON response'}
+
+	if data.get('success'):
+		user_data = data.get('data', {}) or {}
+		quota = round(user_data.get('quota', 0) / 500000, 2)
+		used_quota = round(user_data.get('used_quota', 0) / 500000, 2)
+		return {
+			'success': True,
+			'quota': quota,
+			'used_quota': used_quota,
+			'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
+		}
+	return {'success': False, 'error': 'Failed to get user info: success=false'}
+
+
+def parse_check_in_response(account_name: str, response: dict) -> bool:
+	"""Parse a sign_in response (httpx or browser_fetch shape) into success bool."""
+	status = response.get('status')
+	text = response.get('text', '') or ''
+	if status != 200:
+		print(f'[FAILED] {account_name}: Check-in failed - HTTP {status}')
+		return False
+	try:
+		result = json.loads(text)
+	except Exception:
+		if 'success' in text.lower():
+			print(f'[SUCCESS] {account_name}: Check-in successful!')
+			return True
+		print(f'[FAILED] {account_name}: Check-in failed - Invalid response format')
+		return False
+
+	if result.get('ret') == 1 or result.get('code') == 0 or result.get('success'):
+		print(f'[SUCCESS] {account_name}: Check-in successful!')
+		return True
+	error_msg = result.get('msg', result.get('message', 'Unknown error'))
+	already_checked_keywords = ['已经签到', '已签到', '重复签到', 'already checked', 'already signed']
+	if any(keyword in error_msg.lower() for keyword in already_checked_keywords):
+		print(f'[SUCCESS] {account_name}: Already checked in today')
+		return True
+	print(f'[FAILED] {account_name}: Check-in failed - {error_msg}')
+	return False
+
+
+async def get_user_info(page, account_name: str, provider_config, headers: dict, api_user: str) -> dict:
+	"""Fetch user info via the browser context (auto-attaches WAF + session cookies)."""
+	user_info_url = f'{provider_config.domain.rstrip("/")}{provider_config.user_info_path}'
+	req_headers = {**headers, provider_config.api_user_key: api_user}
+	try:
+		response = await browser_fetch(page, 'GET', user_info_url, req_headers)
 	except Exception as e:
 		return {'success': False, 'error': f'Failed to get user info: {str(e)[:50]}...'}
+	return parse_user_info_response(account_name, response)
 
 
-async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
-	"""准备请求所需的 cookies（可能包含 WAF cookies）"""
-	waf_cookies = {}
-
-	if provider_config.needs_waf_cookies():
-		challenge_path = provider_config.waf_challenge_path or provider_config.login_path
-		challenge_url = f'{provider_config.domain}{challenge_path}'
-		waf_cookies = await get_waf_cookies_with_playwright(account_name, challenge_url, provider_config.waf_cookie_names)
-		if not waf_cookies:
-			print(f'[FAILED] {account_name}: Unable to get WAF cookies')
-			return None
-	else:
-		print(f'[INFO] {account_name}: Bypass WAF not required, using user cookies directly')
-
-	return {**waf_cookies, **user_cookies}
-
-
-def execute_check_in(client, account_name: str, provider_config, headers: dict):
-	"""执行签到请求"""
+async def execute_check_in(page, account_name: str, provider_config, headers: dict, api_user: str) -> bool:
+	"""Execute the sign-in request via the browser context."""
+	sign_in_url = f'{provider_config.domain.rstrip("/")}{provider_config.sign_in_path}'
+	req_headers = {
+		**headers,
+		'Content-Type': 'application/json',
+		'X-Requested-With': 'XMLHttpRequest',
+		provider_config.api_user_key: api_user,
+	}
 	print(f'[NETWORK] {account_name}: Executing check-in')
-
-	checkin_headers = headers.copy()
-	checkin_headers.update({'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'})
-
-	sign_in_url = f'{provider_config.domain}{provider_config.sign_in_path}'
-	response = client.post(sign_in_url, headers=checkin_headers, timeout=30)
-
-	print(f'[RESPONSE] {account_name}: Response status code {response.status_code}')
-
-	if response.status_code == 200:
-		try:
-			result = response.json()
-			if result.get('ret') == 1 or result.get('code') == 0 or result.get('success'):
-				print(f'[SUCCESS] {account_name}: Check-in successful!')
-				return True
-			else:
-				error_msg = result.get('msg', result.get('message', 'Unknown error'))
-				# 检查是否是"已经签到过"的情况，这种情况也算成功
-				already_checked_keywords = ['已经签到', '已签到', '重复签到', 'already checked', 'already signed']
-				if any(keyword in error_msg.lower() for keyword in already_checked_keywords):
-					print(f'[SUCCESS] {account_name}: Already checked in today')
-					return True
-				print(f'[FAILED] {account_name}: Check-in failed - {error_msg}')
-				return False
-		except json.JSONDecodeError:
-			# 如果不是 JSON 响应，检查是否包含成功标识
-			if 'success' in response.text.lower():
-				print(f'[SUCCESS] {account_name}: Check-in successful!')
-				return True
-			else:
-				print(f'[FAILED] {account_name}: Check-in failed - Invalid response format')
-				return False
-	else:
-		print(f'[FAILED] {account_name}: Check-in failed - HTTP {response.status_code}')
+	try:
+		response = await browser_fetch(page, 'POST', sign_in_url, req_headers, body='null')
+	except Exception as e:
+		print(f'[FAILED] {account_name}: Check-in failed - {str(e)[:50]}...')
 		return False
+	print(f'[RESPONSE] {account_name}: Response status code {response.get("status")}')
+	return parse_check_in_response(account_name, response)
 
 
 def format_check_in_notification(detail: dict) -> str:
@@ -307,14 +363,21 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 		print(f'[FAILED] {account_name}: Invalid configuration format')
 		return False, None, None
 
-	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
-	if not all_cookies:
-		return False, None, None
-
-	client = httpx.Client(http2=True, timeout=30.0)
-
+	context = None
+	page = None
 	try:
-		client.cookies.update(all_cookies)
+		# Open one browser per account. All API calls for this account go
+		# through page.evaluate(fetch) so the browser auto-attaches both the
+		# user session cookies and the WAF acw_sc__v2 cookie.
+		waf_cookie_names = provider_config.waf_cookie_names if provider_config.needs_waf_cookies() else []
+		probe_path = provider_config.waf_challenge_path or provider_config.login_path or '/login'
+		context, page = await open_browser_session(
+			account_name,
+			provider_config.domain,
+			user_cookies,
+			waf_cookie_names,
+			probe_path=probe_path,
+		)
 
 		headers = {
 			'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
@@ -323,36 +386,32 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 			'Accept-Encoding': 'gzip, deflate',
 			'Referer': provider_config.domain,
 			'Origin': provider_config.domain,
-			'Connection': 'keep-alive',
 			'Sec-Fetch-Dest': 'empty',
 			'Sec-Fetch-Mode': 'cors',
 			'Sec-Fetch-Site': 'same-origin',
-			provider_config.api_user_key: account.api_user,
 		}
 
-		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
-		user_info_before = get_user_info(client, headers, user_info_url)
-		if user_info_before and user_info_before.get('success'):
+		user_info_before = await get_user_info(page, account_name, provider_config, headers, account.api_user)
+		if user_info_before.get('success'):
 			print(user_info_before['display'])
-		elif user_info_before:
+		else:
 			print(user_info_before.get('error', 'Unknown error'))
 
 		if provider_config.needs_manual_check_in():
-			success = execute_check_in(client, account_name, provider_config, headers)
-			# 签到后再次获取用户信息，用于计算签到收益
-			user_info_after = get_user_info(client, headers, user_info_url)
+			success = await execute_check_in(page, account_name, provider_config, headers, account.api_user)
+			user_info_after = await get_user_info(page, account_name, provider_config, headers, account.api_user)
 			return success, user_info_before, user_info_after
 		else:
 			print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
-			# 自动签到的情况，再次获取用户信息
-			user_info_after = get_user_info(client, headers, user_info_url)
+			user_info_after = await get_user_info(page, account_name, provider_config, headers, account.api_user)
 			return True, user_info_before, user_info_after
 
 	except Exception as e:
 		print(f'[FAILED] {account_name}: Error occurred during check-in process - {str(e)[:50]}...')
 		return False, None, None
 	finally:
-		client.close()
+		if context is not None:
+			await close_browser_session(context, page)
 
 
 async def main():
